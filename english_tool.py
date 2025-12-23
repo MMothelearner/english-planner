@@ -1,168 +1,106 @@
 import streamlit as st
+from openai import OpenAI # DeepSeek 兼容 OpenAI 的库
 
-# --- 页面配置 ---
-st.set_page_config(page_title="英语教学规划生成器专业版", layout="centered")
+# --- 1. 配置页面 ---
+st.set_page_config(page_title="AI 英语私教 Pro", layout="centered")
 
-# ==========================================
-# 左侧侧边栏：档案录入
-# ==========================================
-st.sidebar.markdown("### 学生档案录入")
+# --- 2. 获取 API Key (从云端安全柜) ---
+# 注意：在本地运行时，如果没有配置 secrets.toml，这段可能会报错。
+# 建议先直接在云端部署查看效果，或者在本地创建一个 .streamlit/secrets.toml 文件
+api_key = st.secrets.get("DEEPSEEK_API_KEY")
 
-# 1. 年龄
-st.sidebar.markdown("**1. 年龄阶段**")
-age = st.sidebar.number_input("填写年龄 (周岁)", min_value=2, max_value=15, value=6, step=1, label_visibility="collapsed")
-brain_stage = "处于右脑感官期" if age < 7 else "处于左脑逻辑期"
-st.sidebar.caption(f"当前设定: {age} 岁 | {brain_stage}")
-st.sidebar.divider()
+# 初始化 DeepSeek 客户端
+if api_key:
+    client = OpenAI(
+        api_key=api_key,
+        base_url="https://api.deepseek.com" # 这里指向 DeepSeek 的服务器
+    )
+else:
+    client = None
 
-# 2. 学段
-st.sidebar.markdown("**2. 就读学段**")
-school_stage = st.sidebar.radio(
-    "就读学段",
-    ("幼儿园 (时间充裕)", "小学 (时间碎片化)"),
-    label_visibility="collapsed"
-)
-st.sidebar.divider()
+# --- 3. 侧边栏：档案录入 ---
+st.sidebar.markdown("### 📋 学生档案录入")
 
-# 3. 现状
-st.sidebar.markdown("**3. 英语现状**")
+age = st.sidebar.number_input("1. 孩子年龄", 2, 15, 6)
+school_stage = st.sidebar.radio("2.就读学段", ("幼儿园 (时间充裕)", "小学 (时间紧张)"))
+
 history_options = {
-    "zero": "1) 零基础 (完全无接触)",
-    "basic_home": "2) 家庭启蒙 (只知皮毛)",
-    "intl_silent": "3) 国际园 (听懂但不说)",
-    "primary_struggle": "4) 校内掉队 (排斥/吃力)",
-    "ket_pass": "5) 优等生 (KET已过)",
-    "toefl_jr": "6) 学术转型 (冲小托福)"
+    "zero": "完全零基础，没接触过",
+    "basic_home": "家里随便学过一点单词",
+    "intl_silent": "国际园，听得懂但不敢说",
+    "primary_struggle": "校内英语跟不上，排斥",
+    "ket_pass": "KET已过，想冲刺PET/卓越",
+    "toefl_jr": "牛娃，准备考小托福"
 }
-background_key = st.sidebar.selectbox(
-    "英语学习现状",
-    options=list(history_options.keys()),
-    format_func=lambda x: history_options[x],
-    label_visibility="collapsed"
-)
-st.sidebar.divider()
+status_key = st.sidebar.selectbox("3. 英语现状", options=list(history_options.keys()), format_func=lambda x: history_options[x])
+status_desc = history_options[status_key] # 获取中文描述
 
-# 生成按钮
-generate_btn = st.sidebar.button("生成定制方案", type="primary")
+generate_btn = st.sidebar.button("✨ 呼叫 AI 生成方案", type="primary")
 
-# ==========================================
-# 核心逻辑区 (纯中文处理)
-# ==========================================
+# --- 4. 核心逻辑：定义 AI 的大脑 (System Prompt) ---
+# 这就是您“投喂”给他的第一批核心指令
+system_prompt = """
+你是一位拥有20年经验的资深英语教研主管。你的教育理念基于“二语习得理论(SLA)”和“支架式教学”。
+请根据用户的输入，生成一份极具针对性的《英语学习规划书》。
 
-def get_analysis_pure_cn(bg_key):
-    if bg_key == "zero": return "听音辨义能力缺失", "母语式浸润法：首要任务是建立声音与图像的直接反射，严禁让孩子背诵字母或拼写。"
-    if bg_key == "basic_home": return "知识点碎片化", "体系化重构：目前的英语知识是孤立的，需通过分级阅读将单词串联成有意义的句子。"
-    if bg_key == "intl_silent": return "语言沉默期", "强制性输出策略：孩子听力已溢出，需利用复述练习逼孩子开口说整句，打通口语通道。"
-    if bg_key == "primary_struggle": return "防御性排斥心理", "降维打击策略：暂时脱离校内高压评价体系，用简单的自然拼读规则重塑自信。"
-    if bg_key == "ket_pass": return "中级化石化现象", "精准度训练：重点攻克长难句的语法拆解，解决凭语感蒙题的问题，提升学术严谨度。"
-    if bg_key == "toefl_jr": return "学术认知缺口", "学术英语转型：生活类英语已饱和，必须引入科普、历史等非虚构类阅读材料。"
-    return "常规发展", "按部就班推进。"
+**你的核心逻辑库：**
+1. 幼儿(3-6岁)：必须走“感官+听力”路线，禁止背单词拼写。
+2. 小学(7-12岁)：必须兼顾“校内成绩”和“能力拓展”，强调时间效率。
+3. 零基础/差生：核心策略是“降维打击”和“保护兴趣”，不要推荐太难的教材。
+4. 国际校/牛娃：核心策略是“原版阅读”和“学术写作”，拒绝低幼内容。
 
-def get_schedule_pure_cn(stage, bg_key):
-    is_kindy = "幼儿园" in stage
-    if is_kindy:
-        time = "45-60 分钟 / 天"
-        focus = "兴趣激发 & 听力输入"
-        weekdays = ["晨间: 英文儿歌磨耳朵 (15分钟)", "放学: 亲子绘本共读 (20分钟)", "晚间: 睡前故事音频 (10分钟)"]
-        weekend = ["生活实践: 超市/公园实物指认", "家庭游戏: 听指令做动作"]
-    else:
-        time = "15-20 分钟 / 天"
-        focus = "效率优先 & 解决痛点"
-        weekdays = ["核心任务 (15分钟)", "错题速览 (5分钟)"]
-        if bg_key == "primary_struggle": weekdays = ["专项: 自然拼读卡片 (10分钟)", "校内: 课文跟读 (10分钟)"]
-        if bg_key == "ket_pass": weekdays = ["精读: 长难句分析 (15分钟)", "语法: 专项刷题 (10分钟)"]
-        weekend = ["影视: 原版电影/纪录片", "阅读: 章节书自由阅读"]
-    return time, focus, weekdays, weekend
+**输出格式要求：**
+请用Markdown格式，语言专业、亲切、有感染力。结构如下：
+1. **深度诊断**：一针见血地指出孩子目前的问题（不要说废话）。
+2. **核心策略**：用一个专业的教学术语（如“母语浸润法”、“三明治反馈法”）来概括。
+3. **周计划表**：根据孩子的时间（幼儿园/小学），制定具体的每日安排。
+4. **推荐资源**：根据孩子水平推荐2本具体的书和1个具体的APP/动画片（带上简单的理由）。
+5. **家长锦囊**：给家长的一条具体的互动建议（话术或游戏）。
+"""
 
-def get_action_kit_pure_cn(bg_key):
-    if bg_key == "intl_silent": return "破冰话术：装傻游戏", "家长故意指鹿为马（比如指着苹果说是香蕉），利用孩子的纠错本能诱导其开口。"
-    if bg_key == "primary_struggle": return "心理建设：三明治反馈法", "第一步先肯定具体的优点，第二步提出微小的修正建议，第三步再次鼓励。严禁直接批评。"
-    if bg_key == "ket_pass": return "学术工具：长难句拆解法", "三步走：1.圈出动词；2.括号括掉修饰语（砍枝叶）；3.提取主谓宾（抓主干）。"
-    if bg_key == "zero": return "全身反应互动法", "家长发出口令（如摸鼻子），自己先做示范，让孩子模仿动作，不强制孩子开口。"
-    return "通用技巧：图片环游", "在读文字前，先引导孩子看图猜故事，通过提问激发好奇心，降低阅读畏难情绪。"
-
-def get_resources_pure_cn(bg_key):
-    # 书名和APP名称保留英文原名，方便家长搜索，但移除括号内的英文说明
-    books = []
-    apps = []
-    if bg_key == "zero":
-        books = ["《Brown Bear, Brown Bear》", "《The Very Hungry Caterpillar》"]
-        apps = ["Super Simple Songs", "Starfall"]
-    elif bg_key == "basic_home":
-        books = ["《Oxford Reading Tree》 (牛津树)", "《I Can Read》 Biscuit系列"]
-        apps = ["Khan Kids", "伴鱼绘本"]
-    elif bg_key == "intl_silent":
-        books = ["《Elephant & Piggie》", "《Don't Let the Pigeon Drive the Bus》"]
-        apps = ["英语趣配音", "Talk to Me in English"]
-    elif bg_key == "primary_struggle":
-        books = ["《Phonics Kids》", "《Dog Man》"]
-        apps = ["多邻国", "小学英语同步点读"]
-    elif bg_key == "ket_pass":
-        books = ["《English Grammar in Use》", "《Great Writing 1》"]
-        apps = ["Quizlet", "Newsela"]
-    elif bg_key == "toefl_jr":
-        books = ["《Reading Explorer》", "《Wonder》"]
-        apps = ["TED / TED-Ed", "Achieve3000"]
-    return books, apps
-
-# ==========================================
-# 右侧主界面：仪表盘
-# ==========================================
-
-st.title("英语阶段性教学规划书")
-# 这里换成了高大上的中文理论背书
-st.markdown("基于认知语言学与支架式教学理论的深度定制方案")
+# --- 5. 主界面逻辑 ---
+st.title("🎓 AI 英语私教规划书")
+st.caption("Powered by DeepSeek-V3 | 深度教育模型")
 st.markdown("---")
 
 if generate_btn:
-    # 获取数据
-    problem, solution = get_analysis_pure_cn(background_key)
-    time_cost, core_focus, w_plan, we_plan = get_schedule_pure_cn(school_stage, background_key)
-    kit_title, kit_content = get_action_kit_pure_cn(background_key)
-    book_list, app_list = get_resources_pure_cn(background_key)
-    
-    # 1. 诊断
-    st.subheader("第一部分：深度诊断")
-    c1, c2 = st.columns([1,2])
-    with c1: st.markdown(f"**核心症结**\n\n{problem}") # 去掉斜体，更稳重
-    with c2: st.markdown(f"**教学策略**\n\n{solution}")
-    st.markdown(" ")
-
-    # 2. 计划
-    st.subheader("第二部分：本周执行计划")
-    m1, m2 = st.columns(2)
-    m1.metric("每日时间预算", time_cost)
-    m2.metric("阶段核心指标", core_focus)
-    st.markdown(" ")
-    
-    t1, t2 = st.tabs(["平日计划 (周一至周五)", "周末计划 (周六日)"])
-    with t1: 
-        for i in w_plan: st.markdown(f"• {i}")
-    with t2: 
-        for i in we_plan: st.markdown(f"• {i}")
-    st.markdown(" ")
-
-    # 3. 资源
-    st.subheader("第三部分：推荐资源配置")
-    rc1, rc2 = st.columns(2)
-    with rc1:
-        st.markdown("**推荐书单**") 
-        for b in book_list: st.markdown(f"• {b}")
-    with rc2:
-        st.markdown("**推荐APP/视频**")
-        for a in app_list: st.markdown(f"• {a}")
-
-    # 4. 锦囊
-    st.markdown(" ")
-    st.subheader("第四部分：家校配合实操锦囊")
-    # 使用 markdown 引用块代替彩色框，更像文档
-    st.markdown(f"> **{kit_title}**\n\n{kit_content}")
+    if not client:
+        st.error("⚠️ 未检测到 API Key，请先在 Streamlit Cloud 后台配置 DEEPSEEK_API_KEY。")
+    else:
+        # 组合用户的 Prompt
+        user_prompt = f"""
+        **学生档案：**
+        - 年龄：{age}岁
+        - 学段：{school_stage}
+        - 现状描述：{status_desc}
+        
+        请为这个孩子生成详细规划。
+        """
+        
+        # 显示加载动画
+        with st.spinner("🤖 AI 正在调取教研库，分析学生档案..."):
+            try:
+                # 向 DeepSeek 发送请求
+                response = client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=1.3, # 稍微高一点的创造性
+                    stream=False
+                )
+                
+                # 获取 AI 的回复
+                ai_content = response.choices[0].message.content
+                
+                # 展示结果
+                st.markdown(ai_content)
+                
+                st.success("✅ 方案已生成！您可以截图保存或调整左侧信息重新生成。")
+                
+            except Exception as e:
+                st.error(f"出错了：{e}")
 
 else:
-    # 初始空状态
-    st.markdown("""
-    <div style="text-align: center; color: #888; padding: 50px;">
-        <p>请在左侧录入学生档案</p>
-        <p>点击按钮生成方案</p>
-    </div>
-    """, unsafe_allow_html=True)
+    st.info("👈 请在左侧填写信息，点击按钮，AI 将为您实时生成方案。")
